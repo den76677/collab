@@ -1,0 +1,392 @@
+# ============================================================================
+#  PyTorch MLP для оценки стоимости автомобилей
+# CarPrice_Assignment (Kaggle hellbuoy/car-price-prediction)
+# 150 эпох | расширенная визуализация, как в презентации
+# ============================================================================
+
+print(" Установка зависимостей...")
+!pip install -q kaggle torch torchvision torchaudio pandas numpy scikit-learn matplotlib seaborn
+
+import os, zipfile, warnings
+warnings.filterwarnings("ignore")
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, confusion_matrix
+
+# Визуальный стиль
+plt.style.use('seaborn-v0_8-darkgrid')
+sns.set_palette("husl")
+plt.rcParams['figure.figsize'] = (12, 4)
+
+# Сид и устройство
+SEED = 42
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print(" Все зависимости установлены!")
+print("="*80)
+print(" НАЧАЛО ПРОЕКТА: PyTorch‑НС для оценки цены авто")
+print("="*80)
+print(f"PyTorch: {torch.__version__}, устройство: {DEVICE}")
+
+# ============================================================================
+# 1. ЗАГРУЗКА И ПОДГОТОВКА ДАННЫХ
+# ============================================================================
+print("\n" + "="*80)
+print(" ЗАГРУЗКА ДАННЫХ CarPrice_Assignment С KAGGLE")
+print("="*80)
+
+KAGGLE_JSON_PATH = "/content/kaggle.json"
+assert os.path.exists(KAGGLE_JSON_PATH), "Загрузите kaggle.json в /content через Files"
+
+os.makedirs("/root/.kaggle", exist_ok=True)
+!cp /content/kaggle.json /root/.kaggle/
+!chmod 600 /root/.kaggle/kaggle.json
+
+!kaggle datasets download -d hellbuoy/car-price-prediction -p /content/ -q
+with zipfile.ZipFile("/content/car-price-prediction.zip", "r") as z:
+    z.extractall("/content/")
+
+df = pd.read_csv("/content/CarPrice_Assignment.csv")
+print("Размер датасета:", df.shape)
+print(df.head())
+
+target_col = "price"
+
+numeric_cols = [
+    "wheelbase", "carlength", "carwidth", "carheight",
+    "curbweight", "enginesize", "boreratio", "stroke",
+    "compressionratio", "horsepower", "peakrpm",
+    "citympg", "highwaympg"
+]
+cat_cols = [
+    "fueltype", "aspiration", "doornumber", "carbody",
+    "drivewheel", "enginelocation", "enginetype",
+    "cylindernumber", "fuelsystem"
+]
+
+df = df.dropna()
+
+X_num = df[numeric_cols].values
+X_cat_raw = df[cat_cols].astype(str)
+X_cat = pd.get_dummies(X_cat_raw, drop_first=True).values
+
+X = np.hstack([X_num, X_cat])
+y = df[target_col].values.reshape(-1, 1)
+
+print(f"\n✓ Числовых признаков: {X_num.shape[1]}")
+print(f"✓ Категориальных (после OHE): {X_cat.shape[1]}")
+print(f"✓ Всего признаков: {X.shape[1]}")
+
+# Нормализация
+scaler_X = StandardScaler()
+scaler_y = StandardScaler()
+X_scaled = scaler_X.fit_transform(X)
+y_scaled = scaler_y.fit_transform(y).ravel()
+
+# 60 / 20 / 20
+X_train, X_temp, y_train, y_temp = train_test_split(
+    X_scaled, y_scaled, test_size=0.4, random_state=SEED
+)
+X_val, X_test, y_val, y_test = train_test_split(
+    X_temp, y_temp, test_size=0.5, random_state=SEED
+)
+
+print(f"\n✓ Разделение данных:")
+print(f"  Train: {X_train.shape[0]} образцов (60%)")
+print(f"  Val:   {X_val.shape[0]} образцов (20%)")
+print(f"  Test:  {X_test.shape[0]} образцов (20%)")
+
+input_dim = X_train.shape[1]
+print(f"\n✓ Входной слой: {input_dim} признаков")
+print("✓ Выход: 1 (регрессия цены)")
+
+BATCH_SIZE = 32
+
+train_ds = TensorDataset(torch.FloatTensor(X_train), torch.FloatTensor(y_train))
+val_ds   = TensorDataset(torch.FloatTensor(X_val),   torch.FloatTensor(y_val))
+test_ds  = TensorDataset(torch.FloatTensor(X_test),  torch.FloatTensor(y_test))
+
+train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE)
+test_loader  = DataLoader(test_ds,loader  = DataLoader(test_ds,  batch_size=BATCH_SIZE)
+
+# ============================================================================
+# 2. ГИПЕРПАРАМЕТРЫ И МОДЕЛЬ
+# ============================================================================
+print("\n" + "="*80)
+print("  ГИПЕРПАРАМЕТРЫ И ПОСТРОЕНИЕ МОДЕЛИ")
+print("="*80)
+
+H1, H2, H3 = 128, 64, 32
+DROPOUT = 0.3
+L2_REG = 1e-3
+EPOCHS = 150
+LEARNING_RATE = 1e-3
+
+print(f"\n📐 Архитектура: {input_dim} → {H1} → {H2} → {H3} → 1")
+print(f"Dropout: {DROPOUT}, L2 (weight decay): {L2_REG}")
+print(f"Эпох: {EPOCHS}, batch_size: {BATCH_SIZE}, lr: {LEARNING_RATE}")
+
+class CarPriceMLP(nn.Module):
+    def __init__(self, in_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, H1),
+            nn.ReLU(),
+            nn.BatchNorm1d(H1),
+            nn.Dropout(DROPOUT),
+
+            nn.Linear(H1, H2),
+            nn.ReLU(),
+            nn.BatchNorm1d(H2),
+            nn.Dropout(DROPOUT),
+
+            nn.Linear(H2, H3),
+            nn.ReLU(),
+
+            nn.Linear(H3, 1)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+model = CarPriceMLP(input_dim).to(DEVICE)
+criterion = nn.MSELoss()
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=L2_REG)
+
+print("\nМодель:")
+print(model)
+total_params = sum(p.numel() for p in model.parameters())
+print(f"\nВсего параметров: {total_params:,}")
+
+# ============================================================================
+# 3. ОБУЧЕНИЕ
+# ============================================================================
+print("\n" + "="*80)
+print(" ОБУЧЕНИЕ МОДЕЛИ")
+print("="*80)
+
+def train_one_epoch(model, loader, optimizer, criterion):
+    model.train()
+    total_loss, total_mae, n = 0.0, 0.0, 0
+    for xb, yb in loader:
+        xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+        optimizer.zero_grad()
+        pred = model(xb).squeeze()
+        loss = criterion(pred, yb)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * xb.size(0)
+        total_mae  += torch.abs(pred - yb).sum().item()
+        n += xb.size(0)
+    return total_loss / n, total_mae / n
+
+def evaluate(model, loader, criterion):
+    model.eval()
+    total_loss, total_mae, n = 0.0, 0.0, 0
+    with torch.no_grad():
+        for xb, yb in loader:
+            xb, yb = xb.to(DEVICE), yb.to(DEVICE)
+            pred = model(xb).squeeze()
+            loss = criterion(pred, yb)
+            total_loss += loss.item() * xb.size(0)
+            total_mae  += torch.abs(pred - yb).sum().item()
+            n += xb.size(0)
+    return total_loss / n, total_mae / n
+
+train_losses, val_losses = [], []
+train_maes, val_maes = [], []
+
+for epoch in range(1, EPOCHS+1):
+    tr_loss, tr_mae = train_one_epoch(model, train_loader, optimizer, criterion)
+    v_loss, v_mae   = evaluate(model, val_loader, criterion)
+
+    train_losses.append(tr_loss)
+    val_losses.append(v_loss)
+    train_maes.append(tr_mae)
+    val_maes.append(v_mae)
+
+    if epoch % 10 == 0 or epoch == 1 or epoch == EPOCHS:
+        print(f"Эпоха {epoch:3d}/{EPOCHS}: "
+              f"train_loss={tr_loss:.4f}, val_loss={v_loss:.4f}, "
+              f"train_MAE={tr_mae:.4f}, val_MAE={v_mae:.4f}")
+
+print("\n ОБУЧЕНИЕ ЗАВЕРШЕНО!")
+
+# ============================================================================
+# 4. ОЦЕНКА НА TEST + БИННУТАЯ МАТРИЦА ОШИБОК
+# ============================================================================
+print("\n" + "="*80)
+print(" ОЦЕНКА НА ТЕСТОВОМ НАБОРЕ")
+print("="*80)
+
+model.eval()
+all_preds, all_targets = [], []
+with torch.no_grad():
+    for xb, yb in test_loader:
+        xb = xb.to(DEVICE)
+        pred = model(xb).squeeze().cpu().numpy()
+        all_preds.append(pred)
+        all_targets.append(yb.numpy())
+
+all_preds = np.concatenate(all_preds)
+all_targets = np.concatenate(all_targets)
+
+y_test_orig = scaler_y.inverse_transform(all_targets.reshape(-1,1)).ravel()
+y_pred_orig = scaler_y.inverse_transform(all_preds.reshape(-1,1)).ravel()
+
+mse = mean_squared_error(y_test_orig, y_pred_orig)
+rmse = np.sqrt(mse)
+mae = mean_absolu
+te_error(y_test_orig, y_pred_orig)
+r2 = r2_score(y_test_orig, y_pred_orig)
+
+print(f"\nRMSE = {rmse:.2f} $")
+print(f"MAE  = {mae:.2f} $")
+print(f"R²   = {r2:.4f}")
+
+# Биннинг цены для «матрицы ошибок»
+bins = np.quantile(y_test_orig, [0, 0.25, 0.5, 0.75, 1.0])
+bin_labels = ["Q1 (дешевые)", "Q2", "Q3", "Q4 (дорогие)"]
+y_true_bins = np.digitize(y_test_orig, bins[1:-1])
+y_pred_bins = np.digitize(y_pred_orig, bins[1:-1])
+cm = confusion_matrix(y_true_bins, y_pred_bins, labels=[0,1,2,3])
+
+print("\nМатрица ошибок по ценовым сегментам:")
+print(cm)
+
+# Средняя |ошибка| по сегментам
+seg_mae = []
+for b in range(4):
+    mask = y_true_bins == b
+    if mask.sum() == 0:
+        seg_mae.append(0)
+    else:
+        seg_mae.append(np.mean(np.abs(y_test_orig[mask] - y_pred_orig[mask])))
+
+# «уверенность» модели = 1 − |ошибка| / max|ошибки|
+abs_errors = np.abs(y_test_orig - y_pred_orig)
+max_err = abs_errors.max() if abs_errors.max() > 0 else 1.0
+conf_scores = 1 - abs_errors / max_err
+
+# ============================================================================
+# 5. ВИЗУАЛИЗАЦИЯ «КАК В ПРЕЗЕНТАЦИИ»
+# ============================================================================
+print("\n" + "="*80)
+print("📈 ВИЗУАЛИЗАЦИЯ РАЗЛИЧНЫХ ПРОЦЕССОВ")
+print("="*80)
+
+epochs_range = range(EPOCHS)
+max_mae = max(max(train_maes), max(val_maes))
+train_acc = 1 - np.array(train_maes) / max_mae
+val_acc   = 1 - np.array(val_maes)   / max_mae
+
+fig = plt.figure(figsize=(16, 12))
+gs = fig.add_gridspec(3, 2, hspace=0.35, wspace=0.25)
+
+# 1. Loss (лог‑масштаб)
+ax1 = fig.add_subplot(gs[0, 0])
+ax1.plot(epochs_range, train_losses, label="Train loss", color="#2E86AB")
+ax1.plot(epochs_range, val_losses,   label="Val loss",   color="#A23B72")
+ax1.set_yscale("log")
+ax1.set_title("Loss обучения (логарифмическая шкала)", fontsize=12, fontweight="bold")
+ax1.set_xlabel("Эпоха")
+ax1.set_ylabel("MSE (log)")
+ax1.legend(fontsize=9)
+ax1.grid(True, alpha=0.3)
+
+# 2. «Точность» (1 - norm MAE)
+ax2 = fig.add_subplot(gs[0, 1])
+ax2.plot(epochs_range, train_acc, label="Обучающая", color="#06A77D")
+ax2.plot(epochs_range, val_acc,   label="Валидационная", color="#F18F01")
+ax2.set_title("Точность модели (1 − нормированная MAE)", fontsize=12, fontweight="bold")
+ax2.set_xlabel("Эпоха")
+ax2.set_ylabel("Точность")
+ax2.set_ylim(0, 1.05)
+ax2.legend(fontsize=9, loc="lower right")
+ax2.grid(True, alpha=0.3)
+
+# 3. Матрица ошибок по ценовым сегментам
+ax3 = fig.add_subplot(gs[1, 0])
+sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            xticklabels=bin_labels, yticklabels=bin_labels, ax=ax3)
+ax3.set_title("Матрица ошибок по ценовым сегментам", fontsize=12, fontweight="bold")
+ax3.set_xlabel("Предсказанный сегмент")
+ax3.set_ylabel("Истинный сегмент")
+
+# 4. Bar: средняя ошибка по сегментам
+ax4 = fig.add_subplot(gs[1, 1])
+ax4.bar(bin_labels, seg_mae, color="#F18F01", edgecolor="black")
+ax4.set_title("Средняя |ошибка| по ценовым сегментам", fontsize=12, fontweight="bold")
+ax4.set_xlabel("Сегмент цены")
+ax4.set_ylabel("Средняя |ошибка|, $")
+ax4.grid(True, axis="y", alpha=0.3)
+
+# 5. Распределение ошибок
+ax5 = fig.add_subplot(gs[2, 0])
+sns.histplot(y_test_orig - y_pred_orig, bins=30, kde=True, color="#2E86AB", ax=ax5)
+ax5.axvline(0, color="red", linestyle="--", linewidth=2)
+ax5.set_title("Распределение ошибок (факт − прогноз)", fontsize=12, fontweight="bold")
+ax5.set_xlabel("Ошибка, $")
+ax5.set_ylabel("Частота")
+ax5.grid(True, alpha=0.3)
+
+# 6. Распределение «уверенности» (1 − нормированная ошибка)
+ax6 = fig.add_subplot(gs[2, 1])
+ax6.hist(conf_scores, bins=30, edgecolor="black", alpha=0.7, color="#06A77D")
+ax6.axvline(conf_scores.mean(), color="red", linestyle="--",
+            label=f"Mean: {conf_scores.mean():.3f}")
+ax6.set_title("Распределение уверенности модели", fontsize=12, fontweight="bold")
+ax6.set_xlabel("Уверенность (1 − norm|ошибка|)")
+ax6.set_ylabel("Частота")
+ax6.legend(fontsize=9)
+ax6.grid(True, alpha=0.3)
+
+fig.suptitle("Результаты обучения НС для оценки стоимости авто", fontsize=14, fontweight="bold", y=0.95)
+plt.tight_layout()
+plt.show()
+
+print("\n ВСЕ ГРАФИКИ ПОСТРОЕНЫ!")
+
+#============================================================================
+# 6. КРАТКАЯ СВОДКА
+# ============================================================================
+print("\n" + "="*80)
+print("✨ ФИНАЛЬНАЯ СВОДКА")
+print("="*80)
+
+summary_text = f"""
+Итоговые результаты (test):
+  RMSE = {rmse:.2f} $, MAE = {mae:.2f} $, R² = {r2:.4f}
+
+Архитектура MLP:
+  {input_dim} → {H1} → {H2} → {H3} → 1, Dropout={DROPOUT}, weight_decay={L2_REG}
+Эпох: {EPOCHS}, batch_size={BATCH_SIZE}, lr={LEARNING_RATE}
+
+Построены 6 графиков:
+  1) Loss обучения (логарифмическая шкала).
+  2) Точность (1 − нормированная MAE) для train и val.
+  3) Матрица ошибок по ценовым сегментам.
+  4) Бар‑чарт средней ошибки по сегментам.
+  5) Распределение ошибок (факт − прогноз).
+  6) Распределение «уверенности» модели.
+"""
+
+print(summary_text)
+print("="*80)
+print(" МОДЕЛЬ И ВИЗУАЛИЗАЦИЯ ГОТОВЫ ДЛЯ ПРЕЗЕНТАЦИИ! ")
+print("="*80)
